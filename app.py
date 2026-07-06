@@ -7,11 +7,6 @@ Pipeline:
     -> the reader picks a protein (each carries a confidence badge)
     -> resolve its grounding to a UniProt entry (deterministic)
     -> fetch the AlphaFold structure and render it in 3D.
-
-The key idea: we anchor to grounded identifiers, not fuzzy name search, so the
-one protein shown is correct by construction (or clearly flagged when it isn't).
-
-Run with:  streamlit run app.py
 """
 from __future__ import annotations
 
@@ -91,108 +86,119 @@ def _cached_pdb(accession: str):
 # UI
 # --------------------------------------------------------------------------- #
 st.set_page_config(page_title="Protein Explorer", page_icon="🧬", layout="wide")
-st.title("🧬 Protein Explorer")
-st.caption(
-    "Upload a paper, and explore the 3D structures of the proteins it discusses."
-)
 
-uploaded = st.file_uploader("Upload a PDF", type=["pdf"])
+# Custom Banner Header
+st.markdown("""
+    <div style="background: linear-gradient(to right, #0a408a, #1e70d4); padding: 15px; color: white; font-size: 32px; font-weight: bold; border-radius: 5px; margin-bottom: 20px;">
+        Protein Explorer
+    </div>
+""", unsafe_allow_html=True)
+
+# Define the 3-column layout based on width ratios
+left_col, mid_col, right_col = st.columns([1, 2.5, 1.2], gap="large")
+
+# --- LEFT COLUMN: Upload & Selection ---
+with left_col:
+    uploaded = st.file_uploader("Upload a PDF", type=["pdf"])
+
 if uploaded is None:
-    st.info("Upload a PDF to get started.")
+    with mid_col:
+        st.info("👈 Upload a PDF to get started.")
     st.stop()
 
-with st.spinner("Reading the paper and identifying proteins…"):
-    result = _analyze(uploaded.getvalue())
+with mid_col:
+    with st.spinner("Reading the paper and identifying proteins…"):
+        result = _analyze(uploaded.getvalue())
 
 if result.get("text_empty"):
-    st.warning(
-        "No extractable text found — this looks like a scanned/image-only PDF, "
-        "which would need OCR before proteins can be extracted."
-    )
+    with mid_col:
+        st.warning(
+            "No extractable text found — this looks like a scanned/image-only PDF, "
+            "which would need OCR before proteins can be extracted."
+        )
     st.stop()
 
 mentions: list[models.ProteinMention] = result.get("mentions", [])
 source = result.get("source")
 
-# Provenance banner — tell the reader where the grounding came from.
-if source == "PubTator3":
-    st.success(
-        "Proteins identified from **PubTator3** — NCBI's research-grade "
-        "literature annotations for this paper. Each is normalized to a specific "
-        "gene, so what you see is grounded, not guessed."
-    )
-elif source == "Gilda":
-    st.info(
-        "This paper isn't in PubMed Central, so proteins were recognized and "
-        "grounded locally with **gilda**. Most are reliable; anything ambiguous "
-        "is flagged below."
-    )
-
 if not mentions:
-    st.warning("No protein mentions could be grounded in this document.")
+    with mid_col:
+        st.warning("No protein mentions could be grounded in this document.")
     st.stop()
 
-# --- Protein picker --------------------------------------------------------- #
-st.subheader("Proteins in this paper")
-options = {
-    f"{m.badge()}  {m.label}  ·  {m.count} mention{'s' if m.count > 1 else ''}": m
-    for m in mentions
-}
-chosen_label = st.selectbox(
-    "Pick a protein to explore  (● = grounding confidence)", list(options)
-)
-mention = options[chosen_label]
+with left_col:
+    # Provenance banner
+    if source == "PubTator3":
+        st.success("Proteins identified from **PubTator3**.")
+    elif source == "Gilda":
+        st.info("Proteins recognized locally with **gilda**.")
 
-if mention.confidence != models.HIGH:
-    st.caption(f"{mention.badge()}  {_CONF_HELP[mention.confidence]}")
+    st.markdown("### Proteins found")
+    options = {
+        f"{m.badge()}  {m.label}  ·  {m.count} mention{'s' if m.count > 1 else ''}": m
+        for m in mentions
+    }
 
-# --- Resolve to a UniProt entry -------------------------------------------- #
-with st.spinner(f"Resolving “{mention.label}” to a UniProt entry…"):
-    hit = _cached_resolve(mention.db, mention.ident, mention.symbol_hint)
-
-if hit is None:
-    st.warning(
-        f"“{mention.label}” is grounded ({mention.db}:{mention.ident}) but has no "
-        "matching UniProt entry, so there's no structure to show."
+    # Use radio buttons for a cleaner vertical list instead of a dropdown
+    chosen_label = st.radio(
+        "Pick a protein to explore (● = grounding confidence)",
+        list(options),
+        label_visibility="collapsed"
     )
-    st.stop()
+    mention = options[chosen_label]
 
-# --- Structure + details ---------------------------------------------------- #
-left, right = st.columns([3, 2], gap="large")
+    if mention.confidence != models.HIGH:
+        st.caption(f"{mention.badge()}  {_CONF_HELP[mention.confidence]}")
 
-with right:
-    st.markdown(f"### {hit.protein_name}")
-    st.markdown(
-        f"**Accession:** `{hit.accession}`  \n"
-        f"**Gene:** {hit.gene_names or '—'}  \n"
-        f"**Organism:** {hit.organism}"
-    )
-    provenance = (
-        f"NCBI Gene {mention.ident}" if source == "PubTator3"
-        else f"{mention.db}:{mention.ident}"
-        + (f" · score {mention.score}" if mention.score is not None else "")
-    )
-    st.caption(f"{mention.badge()} Grounded via {source} · {provenance}")
+# --- MIDDLE COLUMN SETUP: Resolve Protein ---
+with mid_col:
+    with st.spinner(f"Resolving “{mention.label}” to a UniProt entry…"):
+        hit = _cached_resolve(mention.db, mention.ident, mention.symbol_hint)
 
-    color_mode = st.radio(
-        "Color by",
-        ["spectrum", "confidence"],
-        format_func=lambda m: {
-            "spectrum": "Rainbow (N→C)",
-            "confidence": "AlphaFold confidence (pLDDT)",
-        }[m],
-        horizontal=True,
-    )
-    show_regions = st.checkbox("Highlight functional regions")
-
-    entry = _cached_entry(hit.accession)
-    st.markdown("**Links**")
-    st.markdown(
-        "  ·  ".join(
-            f"[{name}]({url})" for name, url in uniprot.extract_links(entry).items()
+    if hit is None:
+        st.warning(
+            f"“{mention.label}” is grounded ({mention.db}:{mention.ident}) but has no "
+            "matching UniProt entry, so there's no structure to show."
         )
-    )
+        st.stop()
 
+# --- RIGHT COLUMN: Metadata & Options ---
+with right_col:
+    with st.container(border=True):
+        st.markdown(f"### {hit.protein_name}")
+        st.markdown(
+            f"**Accession:** `{hit.accession}`  \n"
+            f"**Gene:** {hit.gene_names or '—'}  \n"
+            f"**Organism:** {hit.organism}"
+        )
+        provenance = (
+            f"NCBI Gene {mention.ident}" if source == "PubTator3"
+            else f"{mention.db}:{mention.ident}"
+                 + (f" · score {mention.score}" if mention.score is not None else "")
+        )
+        st.caption(f"{mention.badge()} Grounded via {source} · {provenance}")
+
+        st.write("**Color by:**")
+        color_mode = st.radio(
+            "Color by",
+            ["spectrum", "confidence"],
+            format_func=lambda m: {
+                "spectrum": "Rainbow (N→C)",
+                "confidence": "AlphaFold confidence (pLDDT)",
+            }[m],
+            label_visibility="collapsed"
+        )
+        show_regions = st.checkbox("Highlight functional regions", value=True)
+
+        entry = _cached_entry(hit.accession)
+        st.markdown("**Links**")
+        st.markdown(
+            "  ·  ".join(
+                f"[{name}]({url})" for name, url in uniprot.extract_links(entry).items()
+            )
+        )
+
+# Prep highlight regions based on the checkbox in the right column
 highlights: list[tuple[int, int, str]] = []
 features: list[dict] = []
 if show_regions:
@@ -202,7 +208,8 @@ if show_regions:
         highlights.append((feat["start"], feat["end"], color))
         feat["color"] = color
 
-with left:
+# --- MIDDLE COLUMN: 3D Viewer Rendering ---
+with mid_col:
     with st.spinner("Fetching AlphaFold structure…"):
         pdb = _cached_pdb(hit.accession)
 
@@ -212,26 +219,29 @@ with left:
             "An experimental PDB structure could be shown here as a fallback."
         )
     else:
+        # Give the viewer plenty of vertical space
         html = structure.render_structure_html(
             pdb, color_mode=color_mode, highlights=highlights
         )
-        st.components.v1.html(html, height=540)
+        st.components.v1.html(html, height=650)
 
-if show_regions:
-    if features:
-        st.markdown("**Highlighted regions**")
-        st.dataframe(
-            [
-                {
-                    "Color": f["color"],
-                    "Type": f["type"],
-                    "Residues": f"{f['start']}–{f['end']}",
-                    "Description": f["description"],
-                }
-                for f in features
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.caption("No annotated functional regions found for this entry.")
+# --- RIGHT COLUMN: Region Data Table ---
+with right_col:
+    if show_regions:
+        if features:
+            st.markdown("**Highlighted regions**")
+            st.dataframe(
+                [
+                    {
+                        "Color": f["color"],
+                        "Type": f["type"],
+                        "Residues": f"{f['start']}–{f['end']}",
+                        "Description": f["description"],
+                    }
+                    for f in features
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("No annotated functional regions found for this entry.")
