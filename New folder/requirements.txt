@@ -1,0 +1,10 @@
+# Core dependencies — the app runs with just these (regex extractor backend).
+streamlit>=1.30
+pdfplumber>=0.10
+py3Dmol>=2.0
+requests>=2.31
+
+# High-quality biomedical NER is OPTIONAL and installed separately, because
+# scispaCy pins spaCy/NumPy versions and downloads a model from a URL — see the
+# README. Kept out of this file so `pip install -r requirements.txt` never fails
+# on the scispaCy stack.

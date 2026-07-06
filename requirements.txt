@@ -1,0 +1,9 @@
+# Core
+streamlit>=1.30
+pdfplumber>=0.10
+py3Dmol>=2.0
+requests>=2.31
+
+# Protein extraction + grounding (fallback path for papers not in PMC).
+# gilda downloads a ~100 MB term-resource file on first use.
+gilda>=1.6
